@@ -5,11 +5,17 @@ import uuid
 
 def lambda_handler(event, context):
 
-    # URL del IGP
     url = "https://ultimosismo.igp.gob.pe/productos/reportes-sismicos"
 
-    # Solicitud HTTP
-    response = requests.get(url)
+    headers_http = {
+        "User-Agent": "Mozilla/5.0"
+    }
+
+    response = requests.get(
+        url,
+        headers=headers_http,
+        timeout=20
+    )
 
     if response.status_code != 200:
         return {
@@ -17,48 +23,39 @@ def lambda_handler(event, context):
             "body": "Error al acceder a la página del IGP"
         }
 
-    # Parsear HTML
     soup = BeautifulSoup(response.content, "html.parser")
 
-    # Buscar la tabla
-    tabla_html = soup.find("table")
-
-    if not tabla_html:
-        return {
-            "statusCode": 404,
-            "body": "No se encontró la tabla de sismos"
-        }
-
-    # Extraer encabezados
-    headers = [
-        th.get_text(strip=True)
-        for th in tabla_html.find_all("th")
-    ]
-
-    # Solo los 10 primeros registros
-    filas = tabla_html.find_all("tr")[1:11]
+    # Buscar filas que contengan reportes IGP
+    filas = soup.find_all("tr")
 
     sismos = []
 
     for fila in filas:
-        celdas = fila.find_all("td")
-
-        if not celdas:
-            continue
-
-        datos = [
-            celda.get_text(" ", strip=True)
-            for celda in celdas
+        celdas = [
+            td.get_text(" ", strip=True)
+            for td in fila.find_all("td")
         ]
 
-        sismo = {}
+        if len(celdas) >= 5:
+            sismo = {
+                "codigo_reporte": celdas[0],
+                "referencia": celdas[1],
+                "semaforo": celdas[2],
+                "magnitud": celdas[3],
+                "fecha_hora": celdas[4]
+            }
 
-        for i in range(min(len(headers), len(datos))):
-            sismo[headers[i]] = datos[i]
+            sismos.append(sismo)
 
-        sismos.append(sismo)
+        if len(sismos) == 10:
+            break
 
-    # DynamoDB
+    if len(sismos) == 0:
+        return {
+            "statusCode": 404,
+            "body": "No se encontraron registros de sismos"
+        }
+
     dynamodb = boto3.resource("dynamodb")
     tabla = dynamodb.Table("TablaSismosIGP")
 
