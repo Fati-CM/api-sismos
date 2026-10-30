@@ -1,60 +1,30 @@
 import requests
-from bs4 import BeautifulSoup
 import boto3
 import uuid
+import json
 
 def lambda_handler(event, context):
 
-    url = "https://ultimosismo.igp.gob.pe/productos/reportes-sismicos"
+    url = "https://ultimosismo.igp.gob.pe/api/ultimo-sismo/ajaxb/2026"
 
-    headers_http = {
-        "User-Agent": "Mozilla/5.0"
-    }
+    response = requests.get(url, timeout=20)
 
-    response = requests.get(
-        url,
-        headers=headers_http,
-        timeout=20
-    )
-
-    if response.status_code != 200:
+    if response.status_code not in [200, 304]:
         return {
             "statusCode": response.status_code,
-            "body": "Error al acceder a la página del IGP"
+            "body": "Error al consultar los sismos del IGP"
         }
 
-    soup = BeautifulSoup(response.content, "html.parser")
-
-    # Buscar filas que contengan reportes IGP
-    filas = soup.find_all("tr")
-
-    sismos = []
-
-    for fila in filas:
-        celdas = [
-            td.get_text(" ", strip=True)
-            for td in fila.find_all("td")
-        ]
-
-        if len(celdas) >= 5:
-            sismo = {
-                "codigo_reporte": celdas[0],
-                "referencia": celdas[1],
-                "semaforo": celdas[2],
-                "magnitud": celdas[3],
-                "fecha_hora": celdas[4]
-            }
-
-            sismos.append(sismo)
-
-        if len(sismos) == 10:
-            break
-
-    if len(sismos) == 0:
+    try:
+        datos = response.json()
+    except Exception as e:
         return {
-            "statusCode": 404,
-            "body": "No se encontraron registros de sismos"
+            "statusCode": 500,
+            "body": f"Error procesando JSON: {str(e)}"
         }
+
+    # Tomar solo los 10 últimos registros
+    ultimos_10 = datos[:10]
 
     dynamodb = boto3.resource("dynamodb")
     tabla = dynamodb.Table("TablaSismosIGP")
@@ -70,16 +40,29 @@ def lambda_handler(event, context):
                 }
             )
 
-    # Insertar los 10 sismos
-    for sismo in sismos:
-        sismo["id"] = str(uuid.uuid4())
-        tabla.put_item(Item=sismo)
+    # Guardar los 10 sismos
+    sismos_guardados = []
+
+    for sismo in ultimos_10:
+
+        item = {
+            "id": str(uuid.uuid4()),
+            "codigo": str(sismo.get("codigo", "")),
+            "referencia": str(sismo.get("referencia1", "")),
+            "magnitud": str(sismo.get("magnitud", "")),
+            "fecha_hora": str(sismo.get("fecha_hora", sismo.get("createdAt", ""))),
+            "intensidad": str(sismo.get("intensidad", "")),
+            "numero_reporte": str(sismo.get("numero_reporte", ""))
+        }
+
+        tabla.put_item(Item=item)
+        sismos_guardados.append(item)
 
     return {
         "statusCode": 200,
-        "body": {
+        "body": json.dumps({
             "mensaje": "Sismos almacenados correctamente",
-            "cantidad": len(sismos),
-            "sismos": sismos
-        }
+            "cantidad": len(sismos_guardados),
+            "sismos": sismos_guardados
+        }, ensure_ascii=False)
     }
